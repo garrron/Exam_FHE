@@ -9,9 +9,9 @@ import { ethers } from 'ethers';
 
 interface ExamData {
   id: number;
-  name: string;
-  score: string;
   subject: string;
+  studentId: string;
+  encryptedScore: string;
   timestamp: number;
   creator: string;
   publicValue1: number;
@@ -22,9 +22,9 @@ interface ExamData {
 
 interface ExamStats {
   totalExams: number;
-  avgScore: number;
-  highScore: number;
-  verifiedCount: number;
+  averageScore: number;
+  passRate: number;
+  highScores: number;
 }
 
 const App: React.FC = () => {
@@ -36,25 +36,26 @@ const App: React.FC = () => {
   const [creatingExam, setCreatingExam] = useState(false);
   const [transactionStatus, setTransactionStatus] = useState<{ visible: boolean; status: "pending" | "success" | "error"; message: string; }>({ 
     visible: false, 
-    status: "pending", 
+    status: "pending" as const, 
     message: "" 
   });
-  const [newExamData, setNewExamData] = useState({ name: "", score: "", subject: "" });
+  const [newExamData, setNewExamData] = useState({ subject: "", studentId: "", score: "" });
   const [selectedExam, setSelectedExam] = useState<ExamData | null>(null);
   const [decryptedScore, setDecryptedScore] = useState<number | null>(null);
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [contractAddress, setContractAddress] = useState("");
   const [fhevmInitializing, setFhevmInitializing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [showFAQ, setShowFAQ] = useState(false);
+  const [faqOpen, setFaqOpen] = useState(false);
 
   const { status, initialize, isInitialized } = useFhevm();
-  const { encrypt, isEncrypting } = useEncrypt();
+  const { encrypt, isEncrypting} = useEncrypt();
   const { verifyDecryption, isDecrypting: fheIsDecrypting } = useDecrypt();
 
   useEffect(() => {
     const initFhevmAfterConnection = async () => {
-      if (!isConnected || isInitialized || fhevmInitializing) return;
+      if (!isConnected) return;
+      if (isInitialized || fhevmInitializing) return;
       
       try {
         setFhevmInitializing(true);
@@ -111,9 +112,9 @@ const App: React.FC = () => {
           const businessData = await contract.getBusinessData(businessId);
           examsList.push({
             id: parseInt(businessId.replace('exam-', '')) || Date.now(),
-            name: businessData.name,
-            score: businessId,
-            subject: businessId,
+            subject: businessData.name,
+            studentId: businessId,
+            encryptedScore: businessId,
             timestamp: Number(businessData.timestamp),
             creator: businessData.creator,
             publicValue1: Number(businessData.publicValue1) || 0,
@@ -122,7 +123,7 @@ const App: React.FC = () => {
             decryptedValue: Number(businessData.decryptedValue) || 0
           });
         } catch (e) {
-          console.error('Error loading business data:', e);
+          console.error('Error loading exam data:', e);
         }
       }
       
@@ -156,15 +157,15 @@ const App: React.FC = () => {
       
       const tx = await contract.createBusinessData(
         businessId,
-        newExamData.name,
+        newExamData.subject,
         encryptedResult.encryptedData,
         encryptedResult.proof,
-        parseInt(newExamData.subject) || 0,
+        parseInt(newExamData.studentId) || 0,
         0,
         "Encrypted Exam Score"
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
+      setTransactionStatus({ visible: true, status: "pending", message: "Encrypting and storing on blockchain..." });
       await tx.wait();
       
       setTransactionStatus({ visible: true, status: "success", message: "Exam record created successfully!" });
@@ -174,10 +175,10 @@ const App: React.FC = () => {
       
       await loadData();
       setShowCreateModal(false);
-      setNewExamData({ name: "", score: "", subject: "" });
+      setNewExamData({ subject: "", studentId: "", score: "" });
     } catch (e: any) {
       const errorMessage = e.message?.includes("user rejected transaction") 
-        ? "Transaction rejected by user" 
+        ? "Transaction rejected" 
         : "Submission failed: " + (e.message || "Unknown error");
       setTransactionStatus({ visible: true, status: "error", message: errorMessage });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
@@ -186,7 +187,7 @@ const App: React.FC = () => {
     }
   };
 
-  const decryptData = async (businessId: string): Promise<number | null> => {
+  const decryptScore = async (businessId: string): Promise<number | null> => {
     if (!isConnected || !address) { 
       setTransactionStatus({ visible: true, status: "error", message: "Please connect wallet first" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
@@ -201,8 +202,16 @@ const App: React.FC = () => {
       const businessData = await contractRead.getBusinessData(businessId);
       if (businessData.isVerified) {
         const storedValue = Number(businessData.decryptedValue) || 0;
-        setTransactionStatus({ visible: true, status: "success", message: "Data already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        
+        setTransactionStatus({ 
+          visible: true, 
+          status: "success", 
+          message: "Score already verified on-chain" 
+        });
+        setTimeout(() => {
+          setTransactionStatus({ visible: false, status: "pending", message: "" });
+        }, 2000);
+        
         return storedValue;
       }
       
@@ -221,22 +230,36 @@ const App: React.FC = () => {
       setTransactionStatus({ visible: true, status: "pending", message: "Verifying decryption on-chain..." });
       
       const clearValue = result.decryptionResult.clearValues[encryptedValueHandle];
+      
       await loadData();
       
       setTransactionStatus({ visible: true, status: "success", message: "Score decrypted and verified successfully!" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+      setTimeout(() => {
+        setTransactionStatus({ visible: false, status: "pending", message: "" });
+      }, 2000);
       
       return Number(clearValue);
       
     } catch (e: any) { 
       if (e.message?.includes("Data already verified")) {
-        setTransactionStatus({ visible: true, status: "success", message: "Data is already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        setTransactionStatus({ 
+          visible: true, 
+          status: "success", 
+          message: "Score is already verified" 
+        });
+        setTimeout(() => {
+          setTransactionStatus({ visible: false, status: "pending", message: "" });
+        }, 2000);
+        
         await loadData();
         return null;
       }
       
-      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed: " + (e.message || "Unknown error") });
+      setTransactionStatus({ 
+        visible: true, 
+        status: "error", 
+        message: "Decryption failed: " + (e.message || "Unknown error") 
+      });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return null; 
     } finally { 
@@ -249,8 +272,12 @@ const App: React.FC = () => {
       const contract = await getContractReadOnly();
       if (!contract) return;
       
-      const isAvailable = await contract.isAvailable();
-      setTransactionStatus({ visible: true, status: "success", message: "System is available and ready!" });
+      const available = await contract.isAvailable();
+      setTransactionStatus({ 
+        visible: true, 
+        status: "success", 
+        message: "FHE system is available and ready!" 
+      });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Availability check failed" });
@@ -258,33 +285,35 @@ const App: React.FC = () => {
     }
   };
 
-  const getExamStats = (): ExamStats => {
+  const calculateStats = (): ExamStats => {
     const totalExams = exams.length;
-    const verifiedCount = exams.filter(e => e.isVerified).length;
-    const scores = exams.filter(e => e.isVerified && e.decryptedValue).map(e => e.decryptedValue || 0);
-    const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
-    const highScore = scores.length > 0 ? Math.max(...scores) : 0;
+    const verifiedExams = exams.filter(e => e.isVerified);
+    const totalScore = verifiedExams.reduce((sum, exam) => sum + (exam.decryptedValue || 0), 0);
+    const averageScore = totalExams > 0 ? totalScore / verifiedExams.length : 0;
+    const passRate = totalExams > 0 ? (verifiedExams.filter(e => (e.decryptedValue || 0) >= 60).length / verifiedExams.length) * 100 : 0;
+    const highScores = verifiedExams.filter(e => (e.decryptedValue || 0) >= 90).length;
 
-    return { totalExams, avgScore, highScore, verifiedCount };
+    return {
+      totalExams,
+      averageScore: Math.round(averageScore * 10) / 10,
+      passRate: Math.round(passRate * 10) / 10,
+      highScores
+    };
   };
 
   const filteredExams = exams.filter(exam => 
-    exam.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    exam.subject.toLowerCase().includes(searchTerm.toLowerCase())
+    exam.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    exam.studentId.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const faqItems = [
-    { question: "What is FHE encryption?", answer: "Fully Homomorphic Encryption allows computations on encrypted data without decryption." },
-    { question: "How are scores protected?", answer: "Scores are encrypted using Zama FHE and can only be decrypted with proper authorization." },
-    { question: "Is my data private?", answer: "Yes, all exam scores are encrypted and cannot be viewed by unauthorized parties." }
-  ];
+  const stats = calculateStats();
 
   if (!isConnected) {
     return (
       <div className="app-container">
         <header className="app-header">
           <div className="logo">
-            <h1>Confidential Academic Testing 🔐</h1>
+            <h1>🔐 FHE Exam System</h1>
           </div>
           <div className="header-actions">
             <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
@@ -294,12 +323,21 @@ const App: React.FC = () => {
         <div className="connection-prompt">
           <div className="connection-content">
             <div className="connection-icon">🎓</div>
-            <h2>Connect Your Wallet to Begin</h2>
-            <p>Secure your academic scores with FHE encryption technology</p>
+            <h2>Connect Wallet to Access Encrypted Exams</h2>
+            <p>Secure academic testing with fully homomorphic encryption for privacy protection</p>
             <div className="connection-steps">
-              <div className="step"><span>1</span><p>Connect wallet to initialize FHE system</p></div>
-              <div className="step"><span>2</span><p>Encrypt and submit exam scores securely</p></div>
-              <div className="step"><span>3</span><p>Verify scores with zero-knowledge proofs</p></div>
+              <div className="step">
+                <span>1</span>
+                <p>Connect your wallet to initialize FHE system</p>
+              </div>
+              <div className="step">
+                <span>2</span>
+                <p>Encrypt exam scores with Zama FHE technology</p>
+              </div>
+              <div className="step">
+                <span>3</span>
+                <p>Automatically grade while keeping data private</p>
+              </div>
             </div>
           </div>
         </div>
@@ -312,6 +350,7 @@ const App: React.FC = () => {
       <div className="loading-screen">
         <div className="fhe-spinner"></div>
         <p>Initializing FHE Encryption System...</p>
+        <p className="loading-note">Securing exam data with homomorphic encryption</p>
       </div>
     );
   }
@@ -319,103 +358,136 @@ const App: React.FC = () => {
   if (loading) return (
     <div className="loading-screen">
       <div className="fhe-spinner"></div>
-      <p>Loading secure exam system...</p>
+      <p>Loading encrypted exam system...</p>
     </div>
   );
-
-  const stats = getExamStats();
 
   return (
     <div className="app-container">
       <header className="app-header">
         <div className="logo">
-          <h1>Confidential Academic Testing 🔐</h1>
+          <h1>🎓 FHE Exam System</h1>
+          <p>Privacy-Preserving Academic Testing</p>
         </div>
         
         <div className="header-actions">
-          <button onClick={checkAvailability} className="status-btn">Check System</button>
-          <button onClick={() => setShowCreateModal(true)} className="create-btn">+ New Exam</button>
-          <button onClick={() => setShowFAQ(!showFAQ)} className="faq-btn">FAQ</button>
+          <button onClick={checkAvailability} className="status-btn">
+            Check System
+          </button>
+          <button onClick={() => setShowCreateModal(true)} className="create-btn">
+            + New Exam
+          </button>
           <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
         </div>
       </header>
       
-      <div className="main-content-container">
-        <div className="stats-section">
-          <div className="stat-card">
-            <h3>Total Exams</h3>
-            <div className="stat-value">{stats.totalExams}</div>
+      <div className="main-content">
+        <div className="stats-panels">
+          <div className="stat-panel">
+            <div className="stat-icon">📊</div>
+            <div className="stat-content">
+              <h3>Total Exams</h3>
+              <div className="stat-value">{stats.totalExams}</div>
+            </div>
           </div>
-          <div className="stat-card">
-            <h3>Average Score</h3>
-            <div className="stat-value">{stats.avgScore.toFixed(1)}</div>
+          
+          <div className="stat-panel">
+            <div className="stat-icon">⭐</div>
+            <div className="stat-content">
+              <h3>Average Score</h3>
+              <div className="stat-value">{stats.averageScore}</div>
+            </div>
           </div>
-          <div className="stat-card">
-            <h3>High Score</h3>
-            <div className="stat-value">{stats.highScore}</div>
+          
+          <div className="stat-panel">
+            <div className="stat-icon">✅</div>
+            <div className="stat-content">
+              <h3>Pass Rate</h3>
+              <div className="stat-value">{stats.passRate}%</div>
+            </div>
           </div>
-          <div className="stat-card">
-            <h3>Verified</h3>
-            <div className="stat-value">{stats.verifiedCount}/{stats.totalExams}</div>
+          
+          <div className="stat-panel">
+            <div className="stat-icon">🏆</div>
+            <div className="stat-content">
+              <h3>High Scores</h3>
+              <div className="stat-value">{stats.highScores}</div>
+            </div>
           </div>
         </div>
 
-        {showFAQ && (
-          <div className="faq-section">
-            <h3>Frequently Asked Questions</h3>
-            {faqItems.map((item, index) => (
-              <div key={index} className="faq-item">
-                <strong>Q: {item.question}</strong>
-                <p>A: {item.answer}</p>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="exams-section">
-          <div className="section-header">
-            <h2>Exam Records</h2>
-            <div className="search-bar">
-              <input 
-                type="text" 
-                placeholder="Search exams..." 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
-            <button onClick={loadData} className="refresh-btn" disabled={isRefreshing}>
-              {isRefreshing ? "Refreshing..." : "Refresh"}
+        <div className="search-section">
+          <div className="search-box">
+            <input 
+              type="text" 
+              placeholder="Search exams by subject or student ID..." 
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+            <button onClick={loadData} disabled={isRefreshing}>
+              {isRefreshing ? "🔄" : "Refresh"}
             </button>
           </div>
-          
-          <div className="exams-list">
+        </div>
+
+        <div className="exams-section">
+          <h2>Encrypted Exam Records</h2>
+          <div className="exams-grid">
             {filteredExams.length === 0 ? (
               <div className="no-exams">
                 <p>No exam records found</p>
-                <button className="create-btn" onClick={() => setShowCreateModal(true)}>
+                <button onClick={() => setShowCreateModal(true)} className="create-btn">
                   Create First Exam
                 </button>
               </div>
             ) : filteredExams.map((exam, index) => (
               <div 
-                className={`exam-item ${selectedExam?.id === exam.id ? "selected" : ""} ${exam.isVerified ? "verified" : ""}`} 
+                className={`exam-card ${exam.isVerified ? "verified" : ""}`}
                 key={index}
                 onClick={() => setSelectedExam(exam)}
               >
-                <div className="exam-title">{exam.name}</div>
-                <div className="exam-meta">
-                  <span>Subject Code: {exam.publicValue1}</span>
-                  <span>Date: {new Date(exam.timestamp * 1000).toLocaleDateString()}</span>
+                <div className="exam-header">
+                  <h3>{exam.subject}</h3>
+                  <span className={`status ${exam.isVerified ? "verified" : "encrypted"}`}>
+                    {exam.isVerified ? "✅ Verified" : "🔒 Encrypted"}
+                  </span>
                 </div>
-                <div className="exam-status">
-                  Status: {exam.isVerified ? "✅ Verified" : "🔓 Ready for Verification"}
+                <div className="exam-details">
+                  <p>Student ID: {exam.publicValue1}</p>
+                  <p>Date: {new Date(exam.timestamp * 1000).toLocaleDateString()}</p>
                   {exam.isVerified && exam.decryptedValue && (
-                    <span className="verified-score">Score: {exam.decryptedValue}</span>
+                    <p className="score">Score: {exam.decryptedValue}/100</p>
                   )}
+                </div>
+                <div className="exam-creator">
+                  Teacher: {exam.creator.substring(0, 8)}...
                 </div>
               </div>
             ))}
           </div>
+        </div>
+
+        <div className="faq-section">
+          <div className="faq-header" onClick={() => setFaqOpen(!faqOpen)}>
+            <h3>FHE Exam System FAQ</h3>
+            <span>{faqOpen ? "−" : "+"}</span>
+          </div>
+          {faqOpen && (
+            <div className="faq-content">
+              <div className="faq-item">
+                <h4>How does FHE protect my exam scores?</h4>
+                <p>Scores are encrypted using Fully Homomorphic Encryption, allowing automatic grading without revealing actual scores to anyone.</p>
+              </div>
+              <div className="faq-item">
+                <h4>Who can see my decrypted scores?</h4>
+                <p>Only authorized parties with decryption keys can view scores after on-chain verification.</p>
+              </div>
+              <div className="faq-item">
+                <h4>Is the system secure?</h4>
+                <p>Yes, Zama FHE technology ensures mathematical security while enabling computations on encrypted data.</p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       
@@ -438,8 +510,9 @@ const App: React.FC = () => {
             setDecryptedScore(null); 
           }} 
           decryptedScore={decryptedScore} 
+          setDecryptedScore={setDecryptedScore} 
           isDecrypting={isDecrypting || fheIsDecrypting} 
-          decryptData={() => decryptData(selectedExam.score)}
+          decryptData={() => decryptScore(selectedExam.studentId)}
         />
       )}
       
@@ -471,7 +544,7 @@ const ModalCreateExam: React.FC<{
     const { name, value } = e.target;
     if (name === 'score') {
       const intValue = value.replace(/[^\d]/g, '');
-      setExamData({ ...examData, [name]: intValue });
+      setExamData({ ...examData, [name]: Math.min(100, parseInt(intValue) || 0) });
     } else {
       setExamData({ ...examData, [name]: value });
     }
@@ -481,24 +554,35 @@ const ModalCreateExam: React.FC<{
     <div className="modal-overlay">
       <div className="create-exam-modal">
         <div className="modal-header">
-          <h2>New Exam Record</h2>
-          <button onClick={onClose} className="close-modal">&times;</button>
+          <h2>Create New Exam Record</h2>
+          <button onClick={onClose} className="close-modal">×</button>
         </div>
         
         <div className="modal-body">
           <div className="fhe-notice">
-            <strong>FHE 🔐 Score Encryption</strong>
-            <p>Exam score will be encrypted with Zama FHE technology</p>
+            <strong>FHE 🔐 Protection</strong>
+            <p>Exam scores are encrypted using Zama FHE technology</p>
           </div>
           
           <div className="form-group">
-            <label>Student Name *</label>
+            <label>Subject *</label>
             <input 
               type="text" 
-              name="name" 
-              value={examData.name} 
+              name="subject" 
+              value={examData.subject} 
               onChange={handleChange} 
-              placeholder="Enter student name..." 
+              placeholder="Mathematics, Physics, etc." 
+            />
+          </div>
+          
+          <div className="form-group">
+            <label>Student ID *</label>
+            <input 
+              type="number" 
+              name="studentId" 
+              value={examData.studentId} 
+              onChange={handleChange} 
+              placeholder="Enter student ID" 
             />
           </div>
           
@@ -509,23 +593,11 @@ const ModalCreateExam: React.FC<{
               name="score" 
               value={examData.score} 
               onChange={handleChange} 
-              placeholder="Enter exam score..." 
               min="0"
               max="100"
+              placeholder="Enter score (0-100)" 
             />
             <div className="data-type-label">FHE Encrypted Integer</div>
-          </div>
-          
-          <div className="form-group">
-            <label>Subject Code *</label>
-            <input 
-              type="number" 
-              name="subject" 
-              value={examData.subject} 
-              onChange={handleChange} 
-              placeholder="Enter subject code..." 
-            />
-            <div className="data-type-label">Public Data</div>
           </div>
         </div>
         
@@ -533,10 +605,10 @@ const ModalCreateExam: React.FC<{
           <button onClick={onClose} className="cancel-btn">Cancel</button>
           <button 
             onClick={onSubmit} 
-            disabled={creating || isEncrypting || !examData.name || !examData.score || !examData.subject} 
+            disabled={creating || isEncrypting || !examData.subject || !examData.studentId || !examData.score} 
             className="submit-btn"
           >
-            {creating || isEncrypting ? "Encrypting..." : "Create Record"}
+            {creating || isEncrypting ? "🔐 Encrypting..." : "Create Exam Record"}
           </button>
         </div>
       </div>
@@ -548,60 +620,107 @@ const ExamDetailModal: React.FC<{
   exam: ExamData;
   onClose: () => void;
   decryptedScore: number | null;
+  setDecryptedScore: (value: number | null) => void;
   isDecrypting: boolean;
   decryptData: () => Promise<number | null>;
-}> = ({ exam, onClose, decryptedScore, isDecrypting, decryptData }) => {
+}> = ({ exam, onClose, decryptedScore, setDecryptedScore, isDecrypting, decryptData }) => {
   const handleDecrypt = async () => {
-    if (decryptedScore !== null) return;
+    if (decryptedScore !== null) { 
+      setDecryptedScore(null); 
+      return; 
+    }
     
     const decrypted = await decryptData();
     if (decrypted !== null) {
-      // Score is set via callback
+      setDecryptedScore(decrypted);
     }
   };
+
+  const getGrade = (score: number) => {
+    if (score >= 90) return "A";
+    if (score >= 80) return "B";
+    if (score >= 70) return "C";
+    if (score >= 60) return "D";
+    return "F";
+  };
+
+  const score = exam.isVerified ? (exam.decryptedValue || 0) : (decryptedScore || 0);
+  const showScore = exam.isVerified || decryptedScore !== null;
 
   return (
     <div className="modal-overlay">
       <div className="exam-detail-modal">
         <div className="modal-header">
-          <h2>Exam Record Details</h2>
-          <button onClick={onClose} className="close-modal">&times;</button>
+          <h2>Exam Details</h2>
+          <button onClick={onClose} className="close-modal">×</button>
         </div>
         
         <div className="modal-body">
           <div className="exam-info">
-            <div className="info-item"><span>Student:</span><strong>{exam.name}</strong></div>
-            <div className="info-item"><span>Subject Code:</span><strong>{exam.publicValue1}</strong></div>
-            <div className="info-item"><span>Date:</span><strong>{new Date(exam.timestamp * 1000).toLocaleDateString()}</strong></div>
+            <div className="info-row">
+              <span>Subject:</span>
+              <strong>{exam.subject}</strong>
+            </div>
+            <div className="info-row">
+              <span>Student ID:</span>
+              <strong>{exam.publicValue1}</strong>
+            </div>
+            <div className="info-row">
+              <span>Teacher:</span>
+              <strong>{exam.creator.substring(0, 8)}...{exam.creator.substring(38)}</strong>
+            </div>
+            <div className="info-row">
+              <span>Date:</span>
+              <strong>{new Date(exam.timestamp * 1000).toLocaleDateString()}</strong>
+            </div>
           </div>
           
-          <div className="data-section">
-            <h3>Encrypted Exam Score</h3>
-            
-            <div className="data-row">
-              <div className="data-label">Exam Score:</div>
-              <div className="data-value">
-                {exam.isVerified && exam.decryptedValue ? 
-                  `${exam.decryptedValue}/100 (Verified)` : 
-                  decryptedScore !== null ? 
-                  `${decryptedScore}/100 (Decrypted)` : 
-                  "🔒 FHE Encrypted"
-                }
-              </div>
-              <button 
-                className={`decrypt-btn ${(exam.isVerified || decryptedScore !== null) ? 'decrypted' : ''}`}
-                onClick={handleDecrypt} 
-                disabled={isDecrypting}
-              >
-                {isDecrypting ? "Decrypting..." : exam.isVerified ? "✅ Verified" : decryptedScore !== null ? "🔓 Decrypted" : "🔓 Verify Score"}
-              </button>
+          <div className="score-section">
+            <h3>Exam Score</h3>
+            <div className="score-display">
+              {showScore ? (
+                <div className="score-result">
+                  <div className="score-number">{score}/100</div>
+                  <div className="score-grade">Grade: {getGrade(score)}</div>
+                  <div className="score-status">
+                    {exam.isVerified ? "✅ On-chain Verified" : "🔓 Locally Decrypted"}
+                  </div>
+                </div>
+              ) : (
+                <div className="encrypted-score">
+                  <div className="encrypted-icon">🔒</div>
+                  <div>Score Encrypted with FHE</div>
+                  <div className="encrypted-text">Homomorphically graded and secured</div>
+                </div>
+              )}
             </div>
             
-            <div className="fhe-info">
-              <div className="fhe-icon">🔐</div>
-              <div>
-                <strong>FHE Protected Score</strong>
-                <p>Score is encrypted using Zama FHE technology for maximum privacy protection.</p>
+            <button 
+              className={`decrypt-btn ${showScore ? 'decrypted' : ''}`}
+              onClick={handleDecrypt} 
+              disabled={isDecrypting}
+            >
+              {isDecrypting ? "🔓 Decrypting..." : 
+               exam.isVerified ? "✅ Verified" : 
+               decryptedScore !== null ? "🔄 Re-verify" : 
+               "🔓 Decrypt Score"}
+            </button>
+          </div>
+          
+          <div className="fhe-explanation">
+            <h4>FHE Protection Process</h4>
+            <div className="process-steps">
+              <div className="step">
+                <span>1</span>
+                <p>Score encrypted using Zama FHE before submission</p>
+              </div>
+              <div className="step">
+                <span>2</span>
+                <p>Automatic homomorphic grading on encrypted data</p>
+              </div>
+              <div className="step">
+                <span>3</span>
+                <p>Secure decryption with on-chain verification</p>
               </div>
             </div>
           </div>
@@ -609,6 +728,15 @@ const ExamDetailModal: React.FC<{
         
         <div className="modal-footer">
           <button onClick={onClose} className="close-btn">Close</button>
+          {!exam.isVerified && (
+            <button 
+              onClick={handleDecrypt} 
+              disabled={isDecrypting}
+              className="verify-btn"
+            >
+              {isDecrypting ? "Verifying..." : "Verify on-chain"}
+            </button>
+          )}
         </div>
       </div>
     </div>
